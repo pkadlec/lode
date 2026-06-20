@@ -157,6 +157,22 @@
   }
   .code-input:focus { outline: none; border-color: var(--accent); }
 
+  .names-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
+  .names-row span { color: #64748b; font-size: 14px; }
+  .name-input {
+    font-size: 16px; text-align: center; padding: 9px 12px; border-radius: 8px;
+    border: 2px solid #334155; background: #0f1c34; color: var(--text); width: 150px;
+  }
+  .name-input:focus { outline: none; border-color: var(--accent); }
+
+  .sound-btn {
+    position: fixed; top: 10px; right: 10px; z-index: 40;
+    background: #1e293b; border: 1px solid #334155; color: var(--text);
+    width: 42px; height: 42px; border-radius: 50%; font-size: 18px; padding: 0;
+    cursor: pointer; line-height: 42px; text-align: center;
+  }
+  .sound-btn:hover { background: #334155; }
+
   /* Úvodní výběr velikosti */
   .setup { text-align: center; }
   .setup h2 { margin: 4px 0 18px; font-size: 22px; }
@@ -208,6 +224,7 @@
   <div class="card" id="card"></div>
 
   <div class="version" id="version"></div>
+  <button class="sound-btn" id="soundBtn" title="Zvuk">🔊</button>
 
   <!-- Předávací / vítězná obrazovka -->
   <div class="overlay hidden" id="overlay">
@@ -215,12 +232,64 @@
     <h2 id="overlayTitle"></h2>
     <p id="overlayText"></p>
     <button class="big-btn go" id="overlayBtn"></button>
+    <button class="big-btn ghost" id="overlayBtn2" style="margin-top:10px;"></button>
   </div>
 
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
-const VERSION = "v9 · 2026-06-20";
+const VERSION = "v10 · 2026-06-20";
 document.getElementById("version").textContent = VERSION;
+
+// ---------- Zvuky (WebAudio, syntetizované - žádné soubory) ----------
+const sfx = (() => {
+  let ctx = null, muted = false;
+  function ac() {
+    if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    return ctx;
+  }
+  function resume() { const c = ac(); if (c && c.state === "suspended") c.resume(); }
+  function tone(freq, dur, type, gain, slideTo) {
+    const c = ac(); if (!c || muted) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type || "sine"; o.frequency.value = freq;
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, c.currentTime + dur);
+    g.gain.value = gain || 0.2;
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+    o.connect(g).connect(c.destination);
+    o.start(); o.stop(c.currentTime + dur);
+  }
+  function noise(dur, gain, lpf) {
+    const c = ac(); if (!c || muted) return;
+    const n = Math.floor(c.sampleRate * dur);
+    const buf = c.createBuffer(1, n, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const g = c.createGain(); g.gain.value = gain || 0.3;
+    let node = src;
+    if (lpf) { const f = c.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = lpf; src.connect(f); node = f; }
+    node.connect(g).connect(c.destination);
+    src.start();
+  }
+  return {
+    toggle() { muted = !muted; return muted; },
+    isMuted() { return muted; },
+    resume,
+    place() { resume(); tone(600, 0.05, "square", 0.10); },
+    miss()  { resume(); tone(380, 0.12, "sine", 0.12, 180); noise(0.18, 0.10, 900); },
+    hit()   { resume(); noise(0.25, 0.35, 1800); tone(120, 0.25, "square", 0.16, 60); },
+    sunk()  { resume(); noise(0.5, 0.45, 1200); tone(90, 0.6, "sawtooth", 0.20, 40); },
+    win()   { resume(); [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.18, "triangle", 0.20), i * 120)); },
+    lose()  { resume(); [400, 300, 200].forEach((f, i) => setTimeout(() => tone(f, 0.3, "sawtooth", 0.18, f * 0.6), i * 160)); },
+  };
+})();
+// odemkni audio při první interakci
+document.addEventListener("pointerdown", () => sfx.resume(), { once: true });
+document.getElementById("soundBtn").onclick = () => {
+  const m = sfx.toggle();
+  sfx.resume();
+  document.getElementById("soundBtn").textContent = m ? "🔇" : "🔊";
+};
 
 const LETTERS = "ABCDEFGHIJKLMNOP";
 
@@ -259,6 +328,9 @@ const state = {
   current: 0,
   placeIndex: 0,
   orient: 0,   // 0/1/2/3 - rotace lodi po 90°
+  p1name: "Hráč 1",
+  p2name: "Hráč 2",
+  onlineName: "Hráč",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -415,6 +487,7 @@ function attachPlacementDrag(grid, player, ship) {
     const cells = shipCells(hoverCell.r, hoverCell.c, ship.size, state.orient);
     if (cellsValid(player.board, cells)) {
       placeShip(player, cells);
+      sfx.place();
       state.placeIndex++; hoverCell = null; renderPlacement();
     }
   }, { passive: false });
@@ -483,10 +556,23 @@ function renderSetup() {
     <div class="setup">
       <h2>Vyber velikost mapy</h2>
       <div class="size-grid" id="sizeGrid"></div>
+      <div class="names-row">
+        <input class="name-input" id="p1name" maxlength="14" placeholder="Hráč 1">
+        <span>vs</span>
+        <input class="name-input" id="p2name" maxlength="14" placeholder="Hráč 2">
+      </div>
       <div class="hint">Větší mapa = víc lodí a delší hra.</div>
-      <div class="controls"><button class="go big-btn" id="startBtn">Začít hru</button></div>
+      <div class="controls">
+        <button class="ghost" id="homeBtn">← Zpět</button>
+        <button class="go big-btn" id="startBtn">Začít hru</button>
+      </div>
     </div>`;
   fillSizeGrid(renderSetup);
+  const i1 = $("p1name"), i2 = $("p2name");
+  i1.value = state.p1name; i2.value = state.p2name;
+  i1.oninput = () => { state.p1name = i1.value; };
+  i2.oninput = () => { state.p2name = i2.value; };
+  $("homeBtn").onclick = () => renderHome();
   $("startBtn").onclick = () => startGame();
 }
 
@@ -509,7 +595,9 @@ function startGame() {
   SIZE = m.size;
   SHIPS = buildFleet(m.fleet);
   document.documentElement.style.setProperty("--cell", m.cell + "px");
-  state.players = [newPlayer("Hráč 1"), newPlayer("Hráč 2")];
+  const n1 = (state.p1name || "").trim() || "Hráč 1";
+  const n2 = (state.p2name || "").trim() || "Hráč 2";
+  state.players = [newPlayer(n1), newPlayer(n2)];
   state.current = 0;
   state.placeIndex = 0;
   state.orient = 0;
@@ -551,6 +639,7 @@ function renderPlacement() {
       const cells = shipCells(r, c, ship.size, state.orient);
       if (cellsValid(player.board, cells)) {
         placeShip(player, cells);
+        sfx.place();
         state.placeIndex++; hoverCell = null; renderPlacement();
       }
     },
@@ -613,6 +702,8 @@ const net = {
   client: null, code: null, myTopic: null, foeTopic: null,
   myReady: false, peerReady: false, myTurn: false, awaiting: false, foeSunk: null,
   watchdog: null, helloTimer: null,
+  myName: "Hráč", foeName: "Soupeř",
+  rematchMe: false, rematchFoe: false, round: 0, lastWon: false,
 };
 
 function clearWatch() { if (net.watchdog) { clearTimeout(net.watchdog); net.watchdog = null; } }
@@ -625,6 +716,8 @@ function cleanupNet() {
   net.enabled = false; net.isHost = false; net.started = false;
   net.client = null; net.code = null; net.myTopic = null; net.foeTopic = null;
   net.myReady = false; net.peerReady = false; net.myTurn = false; net.awaiting = false; net.foeSunk = null;
+  net.myName = "Hráč"; net.foeName = "Soupeř";
+  net.rematchMe = false; net.rematchFoe = false; net.round = 0; net.lastWon = false;
 }
 
 function send(msg) {
@@ -659,12 +752,14 @@ function renderHostSetup() {
     <div class="setup">
       <h2>Vyber velikost mapy</h2>
       <div class="size-grid" id="sizeGrid"></div>
+      <div class="names-row"><input class="name-input" id="myName" maxlength="14" placeholder="Tvoje jméno"></div>
       <div class="controls">
         <button class="ghost" id="btnBack">← Zpět</button>
         <button class="go big-btn" id="btnCreate">Vytvořit hru</button>
       </div>
     </div>`;
   fillSizeGrid(renderHostSetup);
+  const nm = $("myName"); nm.value = state.onlineName; nm.oninput = () => { state.onlineName = nm.value; };
   $("btnBack").onclick = renderOnlineLobby;
   $("btnCreate").onclick = createRoom;
 }
@@ -673,6 +768,7 @@ function renderJoin() {
   card.innerHTML = `
     <div class="setup">
       <h2>Připojit se ke hře</h2>
+      <div class="names-row"><input class="name-input" id="myName" maxlength="14" placeholder="Tvoje jméno"></div>
       <div><input class="code-input" id="codeInput" maxlength="4" autocapitalize="characters" placeholder="KÓD"></div>
       <div class="controls">
         <button class="ghost" id="btnBack">← Zpět</button>
@@ -680,6 +776,7 @@ function renderJoin() {
       </div>
       <div class="hint" id="joinHint">Zadej 4místný kód, který ti poslal soupeř.</div>
     </div>`;
+  const nm = $("myName"); nm.value = state.onlineName; nm.oninput = () => { state.onlineName = nm.value; };
   $("btnBack").onclick = renderOnlineLobby;
   const go = () => { const v = $("codeInput").value.trim().toUpperCase(); if (v) joinRoom(v); };
   $("btnGo").onclick = go;
@@ -729,6 +826,8 @@ function joinRoom(code) {
 function mqttConnect(code, isHost) {
   cleanupNet();
   net.enabled = true; net.isHost = isHost; net.code = code;
+  net.myName = (state.onlineName || "").trim() || "Hráč";
+  net.foeName = "Soupeř";
   net.myTopic  = `lode2p/${code}/${isHost ? "h" : "g"}`;
   net.foeTopic = `lode2p/${code}/${isHost ? "g" : "h"}`;
   const clientId = "lode_" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
@@ -755,8 +854,8 @@ function onMqttReady() {
     renderHostWaiting(net.code);
   } else {
     // guest opakovaně volá "hello", dokud nedostane nastavení hry
-    send({ t: "hello" });
-    net.helloTimer = setInterval(() => send({ t: "hello" }), 1500);
+    send({ t: "hello", name: net.myName });
+    net.helloTimer = setInterval(() => send({ t: "hello", name: net.myName }), 1500);
     net.watchdog = setTimeout(() => netError({ message: "Soupeř neodpovídá (20 s). Zkontroluj kód a že druhý hráč má hru otevřenou." }), 20000);
     renderWaiting("Připojuji se…", true);
   }
@@ -766,17 +865,23 @@ function onNetMessage(msg) {
   switch (msg && msg.t) {
     case "hello":
       if (net.isHost) {
-        send({ t: "config", mapKey: state.mapKey });  // odpověz vždy (kdyby se zpráva ztratila)
+        if (msg.name) net.foeName = msg.name;
+        send({ t: "config", mapKey: state.mapKey, name: net.myName });  // odpověz vždy (kdyby se zpráva ztratila)
         if (!net.started) { net.started = true; startOnlineGame(); }
       }
       break;
     case "config":
-      if (!net.started) { net.started = true; clearWatch(); clearHello(); state.mapKey = msg.mapKey; startOnlineGame(); }
+      if (!net.started) { net.started = true; clearWatch(); clearHello(); state.mapKey = msg.mapKey; if (msg.name) net.foeName = msg.name; startOnlineGame(); }
       break;
     case "ready":  net.peerReady = true; maybeBegin(); break;
     case "begin":  startOnlineBattle(msg.firstTurn); break;
     case "fire":   handleFire(msg.r, msg.c); break;
     case "result": handleResult(msg); break;
+    case "rematch":
+      net.rematchFoe = true;
+      if (net.rematchMe) doRematch();
+      else if (state.phase === "gameover") showOnlineEnd(net.lastWon);
+      break;
     case "bye":    onDisconnect(); break;
   }
 }
@@ -784,10 +889,11 @@ function onNetMessage(msg) {
 function startOnlineGame() {
   clearWatch();
   net.myReady = false; net.peerReady = false; net.foeSunk = new Set();
+  net.rematchMe = false; net.rematchFoe = false;
   const m = MAPS[state.mapKey];
   SIZE = m.size; SHIPS = buildFleet(m.fleet);
   document.documentElement.style.setProperty("--cell", m.cell + "px");
-  state.players = [newPlayer("Já"), newPlayer("Soupeř")];
+  state.players = [newPlayer(net.myName || "Já"), newPlayer(net.foeName || "Soupeř")];
   state.current = 0; state.placeIndex = 0; state.orient = 0; state.phase = "placement";
   hoverCell = null;
   renderPlacement();
@@ -803,7 +909,8 @@ function finishPlacementOnline() {
 
 function maybeBegin() {
   if (net.isHost && net.myReady && net.peerReady) {
-    const firstTurn = "host";
+    const firstTurn = (net.round % 2 === 0) ? "host" : "guest"; // střídá se mezi zápasy
+    net.round++;
     send({ t: "begin", firstTurn });
     startOnlineBattle(firstTurn);
   }
@@ -828,7 +935,7 @@ function renderOnlineBattle() {
 
   const enemyWrap = document.createElement("div");
   enemyWrap.className = "board-wrap";
-  enemyWrap.innerHTML = `<div class="board-title">🎯 Soupeřova mapa - sem střílíš</div>`;
+  enemyWrap.innerHTML = `<div class="board-title">🎯 ${foe.name} - sem střílíš</div>`;
   enemyWrap.appendChild(makeGrid({
     shots: me.shots,
     sunkCells: net.foeSunk,
@@ -838,7 +945,7 @@ function renderOnlineBattle() {
 
   const myWrap = document.createElement("div");
   myWrap.className = "board-wrap mine";
-  myWrap.innerHTML = `<div class="board-title">⚓ Moje loďstvo</div>`;
+  myWrap.innerHTML = `<div class="board-title">⚓ ${me.name} - tvoje loďstvo</div>`;
   myWrap.appendChild(makeGrid({
     reveal: true, board: me.board, shots: foe.shots, sunkCells: sunkCellsOf(me),
   }));
@@ -848,8 +955,8 @@ function renderOnlineBattle() {
   $("status").innerHTML = net.awaiting
     ? "Střela odeslána, čekám na výsledek…"
     : net.myTurn
-      ? `Jsi na tahu - <span class="turn">vystřel na soupeřovu mapu</span>`
-      : "Čeká se na soupeře…";
+      ? `Jsi na tahu, <span class="turn">${me.name}</span> - vystřel na soupeřovu mapu`
+      : `Na tahu: <span class="turn">${foe.name}</span> - čeká se…`;
 }
 
 function onlineFire(r, c) {
@@ -876,6 +983,7 @@ function handleFire(r, c) {
     win = me.ships.every(s => s.hits.size === s.cells.length);
   }
   send({ t: "result", r, c, outcome, sunkCells, win });
+  if (outcome === "sunk") sfx.sunk(); else if (outcome === "hit") sfx.hit(); else sfx.miss();
   if (win) { renderOnlineBattle(); endOnline(false); return; }
   net.myTurn = (outcome === "miss"); // soupeř minul -> teď střílím já
   renderOnlineBattle();
@@ -887,6 +995,7 @@ function handleResult(msg) {
   me.shots[msg.r][msg.c] = (msg.outcome === "miss") ? 1 : 2;
   if (msg.sunkCells) for (const { r, c } of msg.sunkCells) net.foeSunk.add(r + "," + c);
   net.awaiting = false;
+  if (msg.outcome === "sunk") sfx.sunk(); else if (msg.outcome === "hit") sfx.hit(); else sfx.miss();
   if (msg.win) { renderOnlineBattle(); endOnline(true); return; }
   net.myTurn = (msg.outcome !== "miss"); // zásah -> střílím znovu, vedle -> soupeř
   renderOnlineBattle();
@@ -900,13 +1009,37 @@ function handleResult(msg) {
 
 function endOnline(won) {
   state.phase = "gameover";
+  net.lastWon = won;
+  won ? sfx.win() : sfx.lose();
+  showOnlineEnd(won);
+}
+
+function showOnlineEnd(won) {
+  const waiting = net.rematchMe;
   showOverlay({
     icon: won ? "🏆" : "💀",
     title: won ? "Vyhrál jsi!" : "Prohrál jsi",
-    text: won ? "Potopil jsi celé soupeřovo loďstvo. Gratulace!" : "Soupeř potopil celé tvoje loďstvo.",
-    btn: "Zpět na začátek",
-    onClick: () => { hideOverlay(); renderHome(); },
+    text: net.rematchMe ? "Čekám, jestli soupeř přijme revanš…"
+        : net.rematchFoe ? `${net.foeName} chce revanš! Klikni na Revanš.`
+        : (won ? `Potopil jsi loďstvo ${net.foeName}. Gratulace!` : `${net.foeName} potopil celé tvoje loďstvo.`),
+    btn: waiting ? "Čekám na soupeře…" : "🔄 Revanš",
+    onClick: waiting ? () => {} : () => requestRematch(),
+    btn2: "← Menu",
+    onClick2: () => { hideOverlay(); renderHome(); },
   });
+}
+
+function requestRematch() {
+  net.rematchMe = true;
+  send({ t: "rematch" });
+  if (net.rematchFoe) doRematch();
+  else showOnlineEnd(net.lastWon);
+}
+
+function doRematch() {
+  net.rematchMe = false; net.rematchFoe = false;
+  hideOverlay();
+  startOnlineGame();
 }
 
 function onDisconnect() {
@@ -988,12 +1121,14 @@ function fire(r, c) {
 
     if (checkWin(enemy)) { renderBattle(); endGame(me); return; }
     const sunk = ship.hits.size === ship.cells.length;
+    sunk ? sfx.sunk() : sfx.hit();
     renderBattle();
     $("status").innerHTML = sunk
       ? `💥 <span class="turn">Potopena ${shipNameOf(enemy, ship)}!</span> Střílíš znovu.`
       : `🔥 <span class="turn">Zásah!</span> Střílíš znovu.`;
   } else {
     me.shots[r][c] = 1;
+    sfx.miss();
     renderBattle();
     $("status").textContent = "💧 Vedle. Předej počítač soupeři.";
     setTimeout(() => passTurn(), 450);
@@ -1021,20 +1156,25 @@ function passTurn() {
 
 function endGame(winner) {
   state.phase = "gameover";
+  sfx.win();
   showOverlay({
     icon: "🏆", title: `Vyhrává ${winner.name}!`,
     text: "Celé soupeřovo loďstvo je potopené. Gratulace!",
-    btn: "Hrát znovu", onClick: () => { hideOverlay(); state.phase = "setup"; renderHome(); },
+    btn: "🔄 Revanš (stejní hráči)", onClick: () => { hideOverlay(); startGame(); },
+    btn2: "← Menu", onClick2: () => { hideOverlay(); renderHome(); },
   });
 }
 
 // ---------- Overlay ----------
-function showOverlay({ icon, title, text, btn, onClick }) {
+function showOverlay({ icon, title, text, btn, onClick, btn2, onClick2 }) {
   $("overlayIcon").textContent = icon;
   $("overlayTitle").innerHTML = title;
   $("overlayText").textContent = text;
   const b = $("overlayBtn");
   b.textContent = btn; b.onclick = onClick;
+  const b2 = $("overlayBtn2");
+  if (btn2) { b2.textContent = btn2; b2.onclick = onClick2; b2.style.display = ""; }
+  else { b2.style.display = "none"; }
   overlay.classList.remove("hidden");
 }
 function hideOverlay() { overlay.classList.add("hidden"); }
