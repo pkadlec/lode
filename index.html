@@ -193,6 +193,12 @@
   .overlay p { color: #94a3b8; font-size: 16px; margin: 0 0 28px; max-width: 420px; }
   .overlay .big-btn { font-size: 18px; padding: 16px 34px; border-radius: 12px; }
   .lock-icon { font-size: 56px; margin-bottom: 14px; }
+
+  .version {
+    position: fixed; right: 8px; bottom: 6px;
+    font-size: 11px; color: #64748b; opacity: .7;
+    font-family: ui-monospace, Menlo, monospace; pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -200,6 +206,8 @@
   <p class="sub">Klasická hra lodě - na jednom PC i online přes dvě zařízení</p>
 
   <div class="card" id="card"></div>
+
+  <div class="version" id="version"></div>
 
   <!-- Předávací / vítězná obrazovka -->
   <div class="overlay hidden" id="overlay">
@@ -211,6 +219,9 @@
 
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
+const VERSION = "v9 · 2026-06-20";
+document.getElementById("version").textContent = VERSION;
+
 const LETTERS = "ABCDEFGHIJKLMNOP";
 
 // Definice map: velikost + flotila + velikost buňky
