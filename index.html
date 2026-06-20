@@ -123,6 +123,23 @@
   .hint { text-align: center; color: #94a3b8; font-size: 13px; margin-top: 12px; }
   .fleet-info { text-align: center; font-size: 13px; color: #cbd5e1; margin-top: 10px; }
 
+  /* Náhled další lodi k umístění */
+  .nextship {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    margin-top: 16px;
+  }
+  .ns-label { font-size: 14px; color: #cbd5e1; }
+  .ns-label b { color: var(--accent); }
+  .ship-preview {
+    display: grid; gap: 2px;
+    padding: 6px; background: #0f1c34; border-radius: 8px;
+  }
+  .pv-cell { border-radius: 3px; }
+  .pv-cell.on {
+    background: linear-gradient(145deg, #34d399, #059669);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+  }
+
   /* Úvodní výběr velikosti */
   .setup { text-align: center; }
   .setup h2 { margin: 4px 0 18px; font-size: 22px; }
@@ -374,6 +391,30 @@ function attachPlacementDrag(grid, player, ship) {
   }, { passive: false });
 }
 
+// mini-náhled tvaru lodi v dané rotaci
+function shipPreviewEl(size, orient, px) {
+  const cells = shipCells(0, 0, size, orient);
+  let minR = Infinity, minC = Infinity, maxR = -Infinity, maxC = -Infinity;
+  for (const { r, c } of cells) {
+    minR = Math.min(minR, r); minC = Math.min(minC, c);
+    maxR = Math.max(maxR, r); maxC = Math.max(maxC, c);
+  }
+  const rows = maxR - minR + 1, cols = maxC - minC + 1;
+  const on = new Set(cells.map(({ r, c }) => (r - minR) + "," + (c - minC)));
+  const g = document.createElement("div");
+  g.className = "ship-preview";
+  g.style.gridTemplateColumns = `repeat(${cols}, ${px}px)`;
+  g.style.gridTemplateRows = `repeat(${rows}, ${px}px)`;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const d = document.createElement("div");
+      d.className = "pv-cell" + (on.has(r + "," + c) ? " on" : "");
+      d.style.width = px + "px"; d.style.height = px + "px";
+      g.appendChild(d);
+    }
+  return g;
+}
+
 function sunkCellsOf(player) {
   const set = new Set();
   for (const ship of player.ships)
@@ -436,6 +477,7 @@ function renderPlacement() {
   card.innerHTML = `
     <div class="status"><span class="turn">${player.name}</span> - rozmísti loďstvo</div>
     <div class="boards" id="boards"></div>
+    <div class="nextship" id="nextShip"></div>
     <div class="controls" id="controls"></div>
     <div class="hint" id="hint"></div>
     <div class="fleet-info" id="fleetInfo"></div>`;
@@ -471,6 +513,10 @@ function renderPlacement() {
   if (ship && !CAN_HOVER) attachPlacementDrag(grid, player, ship);
 
   if (ship) {
+    const ns = $("nextShip");
+    ns.innerHTML = `<span class="ns-label">Další loď: <b>${ship.name}</b> (trup ${ship.size})</span>`;
+    ns.appendChild(shipPreviewEl(ship.size, state.orient, 20));
+
     const how = CAN_HOVER ? "Klikni na mapu." : "Táhni prstem po mapě a pusť, kam loď umístit.";
     $("hint").textContent = `Pokládáš: ${ship.name} (trup ${ship.size}). ${how} Otočení: tlačítko 🔄.`;
     controlsEl.append(
