@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lodě - hra pro dva</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --sea: #1d4ed8;
+    --sea-light: #2563eb;
+    --grid-line: #1e3a8a;
+    --ship: #475569;
+    --hit: #ef4444;
+    --miss: #94a3b8;
+    --sunk: #7f1d1d;
+    --text: #e2e8f0;
+    --accent: #22d3ee;
+    --ok: #22c55e;
+    --cell: 32px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(circle at top, #1e293b, #0f172a);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: 1px; }
+  .sub { color: #94a3b8; margin: 0 0 20px; font-size: 14px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid #334155;
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.4);
+    max-width: 920px;
+    width: 100%;
+  }
+  .status {
+    text-align: center;
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    min-height: 26px;
+  }
+  .status .turn { color: var(--accent); }
+  .boards {
+    display: flex;
+    gap: 28px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .board-wrap { text-align: center; }
+  .board-title { font-size: 13px; color: #94a3b8; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+  .board-wrap.mine .board-title { color: var(--accent); }
+  .grid {
+    display: grid;
+    gap: 2px;
+    background: var(--grid-line);
+    padding: 2px;
+    border-radius: 8px;
+    user-select: none;
+  }
+  .board-wrap.mine .grid { box-shadow: 0 0 0 2px var(--accent); }
+  .cell {
+    position: relative;
+    width: var(--cell); height: var(--cell);
+    background: var(--sea);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: calc(var(--cell) * 0.5);
+    cursor: default;
+    transition: background .12s, transform .05s;
+  }
+  .grid.clickable .cell { cursor: pointer; }
+  .grid.clickable .cell:hover { background: var(--sea-light); }
+  .cell.ship {
+    background: linear-gradient(145deg, #7b8694, #475569);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.10);
+    border-radius: 4px;
+  }
+  .cell.hit { background: var(--hit); }
+  .cell.miss { background: var(--miss); }
+  .cell.sunk { background: var(--sunk); }
+  .cell.preview { background: #0ea5e9; }
+  .cell.invalid { background: #b91c1c; }
+  .controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--sea-light);
+    color: white;
+    border: none;
+    padding: 11px 20px;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  button:hover { background: #3b82f6; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.ghost { background: #334155; }
+  button.ghost:hover { background: #475569; }
+  button.go { background: var(--ok); }
+  button.go:hover { background: #16a34a; }
+  .hint { text-align: center; color: #94a3b8; font-size: 13px; margin-top: 12px; }
+  .fleet-info { text-align: center; font-size: 13px; color: #cbd5e1; margin-top: 10px; }
+
+  /* Úvodní výběr velikosti */
+  .setup { text-align: center; }
+  .setup h2 { margin: 4px 0 18px; font-size: 22px; }
+  .size-grid {
+    display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px;
+  }
+  .size-opt {
+    background: #0f1c34;
+    border: 2px solid #334155;
+    border-radius: 14px;
+    padding: 18px 22px;
+    cursor: pointer;
+    min-width: 150px;
+    transition: border-color .15s, transform .05s, background .15s;
+  }
+  .size-opt:hover { border-color: var(--sea-light); }
+  .size-opt.active { border-color: var(--accent); background: #132a4a; }
+  .size-opt .dim { font-size: 26px; font-weight: 700; }
+  .size-opt .label { color: #94a3b8; font-size: 13px; margin-top: 4px; }
+  .size-opt .fleet { color: #64748b; font-size: 12px; margin-top: 8px; }
+
+  /* Cover screen / overlay */
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(8, 13, 28, .97);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    z-index: 50;
+    padding: 24px;
+  }
+  .overlay.hidden { display: none; }
+  .overlay h2 { font-size: 30px; margin: 0 0 8px; }
+  .overlay p { color: #94a3b8; font-size: 16px; margin: 0 0 28px; max-width: 420px; }
+  .overlay .big-btn { font-size: 18px; padding: 16px 34px; border-radius: 12px; }
+  .lock-icon { font-size: 56px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+  <h1>🚢 Lodě</h1>
+  <p class="sub">Hra pro dva na jednom počítači - hot seat</p>
+
+  <div class="card" id="card"></div>
+
+  <!-- Předávací / vítězná obrazovka -->
+  <div class="overlay hidden" id="overlay">
+    <div class="lock-icon" id="overlayIcon">🔒</div>
+    <h2 id="overlayTitle"></h2>
+    <p id="overlayText"></p>
+    <button class="big-btn go" id="overlayBtn"></button>
+  </div>
+
+<script>
+const LETTERS = "ABCDEFGHIJKLMNOP";
+
+// Definice map: velikost + flotila + velikost buňky
+const MAPS = {
+  small:   { size: 8,  cell: 36, label: "Malá",      fleet: [4, 3, 3, 2, 2] },
+  classic: { size: 10, cell: 32, label: "Klasická",  fleet: [5, 4, 3, 3, 2] },
+  large:   { size: 12, cell: 28, label: "Velká",     fleet: [5, 4, 4, 3, 3, 2] },
+  huge:    { size: 14, cell: 24, label: "Obří",      fleet: [5, 5, 4, 4, 3, 3, 2] },
+};
+const SHIP_NAMES = ["Letadlová loď", "Bitevní loď", "Křižník", "Ponorka", "Torpédoborec", "Fregata", "Člun"];
+
+let SIZE = 10;
+let SHIPS = [];          // [{name, size}]
+
+function buildFleet(fleetSizes) {
+  // seřaď od největší, přiřaď jména
+  const sorted = [...fleetSizes].sort((a, b) => b - a);
+  return sorted.map((sz, i) => ({ name: SHIP_NAMES[i] || `Loď ${i + 1}`, size: sz }));
+}
+
+// Stav jednoho hráče
+function newPlayer(name) {
+  return {
+    name,
+    board: Array.from({ length: SIZE }, () => Array(SIZE).fill(0)),
+    shots: Array.from({ length: SIZE }, () => Array(SIZE).fill(0)),
+    ships: [],
+  };
+}
+
+const state = {
+  phase: "setup",       // setup | placement | battle | gameover
+  mapKey: "classic",
+  players: [],
+  current: 0,
+  placeIndex: 0,
+  orient: 0,   // 0/1/2/3 - rotace lodi po 90°
+};
+
+const $ = (id) => document.getElementById(id);
+const card = $("card");
+const overlay = $("overlay");
+let hoverCell = null;
+
+// ---------- Geometrie lodí ----------
+// Loď = trup (řada políček) + "komínky" (políčka v druhé řadě nad/vedle trupu).
+// orient: 0 = trup vodorovně, komínky nahoru; 1 = trup svisle, komínky vpravo;
+//         2 = trup vodorovně, komínky dolů;    3 = trup svisle, komínky vlevo.
+function shipCells(r, c, size, orient) {
+  const cells = [];
+  for (let i = 0; i < size; i++) {
+    const hr = (orient === 0 || orient === 2) ? r : r + i;
+    const hc = (orient === 0 || orient === 2) ? c + i : c;
+    cells.push({ r: hr, c: hc });
+    // komínek na lichých vnitřních políčkách: 010, 0100, 01010 ...
+    if (i % 2 === 1 && i < size - 1) {
+      if (orient === 0) cells.push({ r: hr - 1, c: hc });
+      else if (orient === 2) cells.push({ r: hr + 1, c: hc });
+      else if (orient === 1) cells.push({ r: hr, c: hc + 1 });
+      else cells.push({ r: hr, c: hc - 1 });
+    }
+  }
+  return cells;
+}
+
+// validace: všechna políčka v desce a žádný dotyk s jinou lodí (ani diagonálně)
+function cellsValid(board, cells) {
+  for (const { r, c } of cells) {
+    if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return false;
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = r + dr, nc = c + dc;
+        if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === 1)
+          return false;
+      }
+  }
+  return true;
+}
+
+function placeShip(player, cells) {
+  for (const { r, c } of cells) player.board[r][c] = 1;
+  player.ships.push({ cells, hits: new Set() });
+}
+
+function randomFleet(player) {
+  player.board = Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
+  player.ships = [];
+  for (const ship of SHIPS) {
+    let placed = false, guard = 0;
+    while (!placed && guard++ < 4000) {
+      const orient = Math.floor(Math.random() * 4);
+      const r = Math.floor(Math.random() * SIZE);
+      const c = Math.floor(Math.random() * SIZE);
+      const cells = shipCells(r, c, ship.size, orient);
+      if (cellsValid(player.board, cells)) {
+        placeShip(player, cells);
+        placed = true;
+      }
+    }
+  }
+}
+
+// ---------- Mřížka ----------
+function makeGrid(opts) {
+  const grid = document.createElement("div");
+  grid.className = "grid" + (opts.clickable ? " clickable" : "");
+  grid.style.gridTemplateColumns = `repeat(${SIZE}, var(--cell))`;
+  grid.style.gridTemplateRows = `repeat(${SIZE}, var(--cell))`;
+
+  let previewSet = new Map();
+  if (opts.preview) {
+    for (const { r, c } of opts.preview.cells)
+      if (r >= 0 && r < SIZE && c >= 0 && c < SIZE)
+        previewSet.set(r + "," + c, opts.preview.valid);
+  }
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+
+      if (opts.shots) {
+        const s = opts.shots[r][c];
+        if (s === 1) { cell.classList.add("miss"); cell.textContent = "•"; }
+        else if (s === 2) { cell.classList.add("hit"); cell.textContent = "✕"; }
+      }
+      if (opts.reveal && opts.board[r][c] === 1 && !(opts.shots && opts.shots[r][c] === 2)) {
+        cell.classList.add("ship");
+      }
+      if (opts.sunkCells && opts.sunkCells.has(r + "," + c)) {
+        cell.classList.remove("hit", "ship");
+        cell.classList.add("sunk");
+        cell.textContent = "✕";
+      }
+
+      const key = r + "," + c;
+      if (previewSet.has(key)) cell.classList.add(previewSet.get(key) ? "preview" : "invalid");
+
+      if (opts.clickable) {
+        cell.addEventListener("click", () => opts.onCell(r, c));
+        if (opts.onHover) cell.addEventListener("mouseenter", () => opts.onHover(r, c));
+      }
+      grid.appendChild(cell);
+    }
+  }
+  return grid;
+}
+
+function sunkCellsOf(player) {
+  const set = new Set();
+  for (const ship of player.ships)
+    if (ship.hits.size === ship.cells.length)
+      for (const { r, c } of ship.cells) set.add(r + "," + c);
+  return set;
+}
+
+function sunkCellsForShooter(shooter, enemy) {
+  const set = new Set();
+  for (const ship of enemy.ships) {
+    if (ship.cells.every(({ r, c }) => shooter.shots[r][c] === 2))
+      for (const { r, c } of ship.cells) set.add(r + "," + c);
+  }
+  return set;
+}
+
+// ---------- Fáze: výběr velikosti ----------
+function renderSetup() {
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Vyber velikost mapy</h2>
+      <div class="size-grid" id="sizeGrid"></div>
+      <div class="hint">Větší mapa = víc lodí a delší hra.</div>
+      <div class="controls"><button class="go big-btn" id="startBtn">Začít hru</button></div>
+    </div>`;
+  const sg = $("sizeGrid");
+  for (const [key, m] of Object.entries(MAPS)) {
+    const div = document.createElement("div");
+    div.className = "size-opt" + (key === state.mapKey ? " active" : "");
+    div.innerHTML = `
+      <div class="dim">${m.size}×${m.size}</div>
+      <div class="label">${m.label}</div>
+      <div class="fleet">${m.fleet.length} lodí</div>`;
+    div.onclick = () => { state.mapKey = key; renderSetup(); };
+    sg.appendChild(div);
+  }
+  $("startBtn").onclick = () => startGame();
+}
+
+function startGame() {
+  const m = MAPS[state.mapKey];
+  SIZE = m.size;
+  SHIPS = buildFleet(m.fleet);
+  document.documentElement.style.setProperty("--cell", m.cell + "px");
+  state.players = [newPlayer("Hráč 1"), newPlayer("Hráč 2")];
+  state.current = 0;
+  state.placeIndex = 0;
+  state.orient = 0;
+  state.phase = "placement";
+  hoverCell = null;
+  renderPlacement();
+}
+
+// ---------- Fáze: rozmístění ----------
+function renderPlacement() {
+  const player = state.players[state.current];
+  const ship = SHIPS[state.placeIndex];
+
+  card.innerHTML = `
+    <div class="status"><span class="turn">${player.name}</span> - rozmísti loďstvo</div>
+    <div class="boards" id="boards"></div>
+    <div class="controls" id="controls"></div>
+    <div class="hint" id="hint"></div>
+    <div class="fleet-info" id="fleetInfo"></div>`;
+  const boardsEl = $("boards"), controlsEl = $("controls");
+
+  let preview = null;
+  if (ship && hoverCell) {
+    const cells = shipCells(hoverCell.r, hoverCell.c, ship.size, state.orient);
+    preview = { cells, valid: cellsValid(player.board, cells) };
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "board-wrap mine";
+  wrap.innerHTML = `<div class="board-title">⚓ Tvoje mapa</div>`;
+  wrap.appendChild(makeGrid({
+    reveal: true,
+    board: player.board,
+    clickable: !!ship,
+    preview,
+    onCell: (r, c) => {
+      if (!ship) return;
+      const cells = shipCells(r, c, ship.size, state.orient);
+      if (cellsValid(player.board, cells)) {
+        placeShip(player, cells);
+        state.placeIndex++; hoverCell = null; renderPlacement();
+      }
+    },
+    onHover: (r, c) => { hoverCell = { r, c }; renderPlacement(); },
+  }));
+  boardsEl.appendChild(wrap);
+
+  if (ship) {
+    $("hint").textContent = `Pokládáš: ${ship.name} (trup ${ship.size}). Klikni na mapu. Otočení: tlačítko nebo mezerník.`;
+    controlsEl.append(
+      btn("🔄 Otočit loď", "ghost", () => { state.orient = (state.orient + 1) % 4; renderPlacement(); }),
+      btn("🎲 Rozmístit náhodně", "ghost", () => { randomFleet(player); state.placeIndex = SHIPS.length; renderPlacement(); }),
+    );
+  } else {
+    $("hint").textContent = "Loďstvo je rozmístěno.";
+    controlsEl.append(
+      btn("↺ Rozmístit znovu", "ghost", () => { state.players[state.current] = newPlayer(player.name); state.placeIndex = 0; hoverCell = null; renderPlacement(); }),
+      btn("Hotovo ✓", "go", () => finishPlacement()),
+    );
+  }
+
+  $("fleetInfo").innerHTML = SHIPS.map((s, i) => `${i < state.placeIndex ? "✓" : "○"} ${s.name} (${s.size})`).join("&nbsp;&nbsp;");
+}
+
+function finishPlacement() {
+  if (state.current === 0) {
+    showOverlay({
+      icon: "🔒", title: "Předej počítač Hráči 2",
+      text: "Hráč 1 má hotovo. Až bude u počítače Hráč 2, klikni níže a rozmísti svoje loďstvo.",
+      btn: "Jsem Hráč 2 - pokračovat",
+      onClick: () => { hideOverlay(); state.current = 1; state.placeIndex = 0; hoverCell = null; renderPlacement(); },
+    });
+  } else {
+    showOverlay({
+      icon: "⚔️", title: "Můžeme začít!",
+      text: "Obě loďstva jsou na svých místech. Předej počítač Hráči 1, který střílí jako první.",
+      btn: "Spustit bitvu",
+      onClick: () => { hideOverlay(); state.phase = "battle"; state.current = 0; renderBattle(); },
+    });
+  }
+}
+
+// ---------- Fáze: bitva ----------
+function renderBattle() {
+  const me = state.players[state.current];
+  const enemy = state.players[1 - state.current];
+
+  card.innerHTML = `
+    <div class="status" id="status">Na tahu: <span class="turn">${me.name}</span> - vyber políčko na soupeřově mapě</div>
+    <div class="boards" id="boards"></div>
+    <div class="controls"></div>
+    <div class="hint" id="hint">Zásah = hraješ znovu. Minutí = předáváš tah.</div>
+    <div class="fleet-info" id="fleetInfo"></div>`;
+  const boardsEl = $("boards");
+
+  // Soupeřova mapa - sem střílím
+  const enemyWrap = document.createElement("div");
+  enemyWrap.className = "board-wrap";
+  enemyWrap.innerHTML = `<div class="board-title">🎯 Soupeřova mapa - sem střílíš</div>`;
+  enemyWrap.appendChild(makeGrid({
+    shots: me.shots,
+    sunkCells: sunkCellsForShooter(me, enemy),
+    clickable: true,
+    onCell: (r, c) => fire(r, c),
+  }));
+
+  // Moje mapa - vidím své lodě i soupeřovy zásahy
+  const myWrap = document.createElement("div");
+  myWrap.className = "board-wrap mine";
+  myWrap.innerHTML = `<div class="board-title">⚓ Moje loďstvo</div>`;
+  myWrap.appendChild(makeGrid({
+    reveal: true,
+    board: me.board,
+    shots: enemy.shots,
+    sunkCells: sunkCellsOf(me),
+  }));
+
+  boardsEl.append(enemyWrap, myWrap);
+  $("fleetInfo").innerHTML = fleetStatusLine(enemy);
+}
+
+function fleetStatusLine(enemy) {
+  return "Soupeřovo loďstvo: " + SHIPS.map((s, i) => {
+    const ship = enemy.ships[i];
+    const sunk = ship && ship.hits.size === ship.cells.length;
+    return `${sunk ? "💥" : "🚢"} ${s.name}`;
+  }).join("&nbsp;&nbsp;");
+}
+
+function fire(r, c) {
+  const me = state.players[state.current];
+  const enemy = state.players[1 - state.current];
+  if (me.shots[r][c] !== 0) return;
+
+  if (enemy.board[r][c] === 1) {
+    me.shots[r][c] = 2;
+    const ship = enemy.ships.find(s => s.cells.some(cell => cell.r === r && cell.c === c));
+    ship.hits.add(r + "," + c);
+
+    if (checkWin(enemy)) { renderBattle(); endGame(me); return; }
+    const sunk = ship.hits.size === ship.cells.length;
+    renderBattle();
+    $("status").innerHTML = sunk
+      ? `💥 <span class="turn">Potopena ${shipNameOf(enemy, ship)}!</span> Střílíš znovu.`
+      : `🔥 <span class="turn">Zásah!</span> Střílíš znovu.`;
+  } else {
+    me.shots[r][c] = 1;
+    renderBattle();
+    $("status").textContent = "💧 Vedle. Předej počítač soupeři.";
+    setTimeout(() => passTurn(), 450);
+  }
+}
+
+function shipNameOf(player, ship) {
+  const idx = player.ships.indexOf(ship);
+  return SHIPS[idx] ? SHIPS[idx].name : "loď";
+}
+
+function checkWin(enemy) {
+  return enemy.ships.every(s => s.hits.size === s.cells.length);
+}
+
+function passTurn() {
+  const next = 1 - state.current;
+  showOverlay({
+    icon: "🔒", title: `Předej počítač - ${state.players[next].name}`,
+    text: "Obrazovka je zakrytá, aby soupeř neviděl tvoje loďstvo. Klikni, až budeš u počítače ty.",
+    btn: `Jsem ${state.players[next].name} - pokračovat`,
+    onClick: () => { hideOverlay(); state.current = next; renderBattle(); },
+  });
+}
+
+function endGame(winner) {
+  state.phase = "gameover";
+  showOverlay({
+    icon: "🏆", title: `Vyhrává ${winner.name}!`,
+    text: "Celé soupeřovo loďstvo je potopené. Gratulace!",
+    btn: "Hrát znovu", onClick: () => { hideOverlay(); state.phase = "setup"; renderSetup(); },
+  });
+}
+
+// ---------- Overlay ----------
+function showOverlay({ icon, title, text, btn, onClick }) {
+  $("overlayIcon").textContent = icon;
+  $("overlayTitle").innerHTML = title;
+  $("overlayText").textContent = text;
+  const b = $("overlayBtn");
+  b.textContent = btn; b.onclick = onClick;
+  overlay.classList.remove("hidden");
+}
+function hideOverlay() { overlay.classList.add("hidden"); }
+
+// ---------- Helper ----------
+function btn(label, cls, onClick) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  if (cls) b.className = cls;
+  b.onclick = onClick;
+  return b;
+}
+
+// otočení lodě mezerníkem
+document.addEventListener("keydown", (e) => {
+  if (state.phase === "placement" && (e.code === "Space" || e.key === " ")) {
+    e.preventDefault();
+    if (state.placeIndex < SHIPS.length) { state.orient = (state.orient + 1) % 4; renderPlacement(); }
+  }
+});
+
+// start
+renderSetup();
+</script>
+</body>
+</html>
