@@ -140,6 +140,23 @@
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
   }
 
+  /* Online lobby */
+  .menu-btns { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: 8px 0 4px; }
+  .menu-btns button { min-width: 280px; }
+  .code-box {
+    font-size: 38px; font-weight: 800; letter-spacing: 8px;
+    color: var(--accent); background: #0f1c34;
+    padding: 18px 26px; border-radius: 12px; margin: 12px auto; display: inline-block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .code-input {
+    font-size: 28px; text-align: center; letter-spacing: 8px; text-transform: uppercase;
+    padding: 12px; border-radius: 10px; border: 2px solid #334155;
+    background: #0f1c34; color: var(--text); width: 240px; margin: 12px 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .code-input:focus { outline: none; border-color: var(--accent); }
+
   /* Úvodní výběr velikosti */
   .setup { text-align: center; }
   .setup h2 { margin: 4px 0 18px; font-size: 22px; }
@@ -180,7 +197,7 @@
 </head>
 <body>
   <h1>🚢 Lodě</h1>
-  <p class="sub">Hra pro dva na jednom počítači - hot seat</p>
+  <p class="sub">Klasická hra lodě - na jednom PC i online přes dvě zařízení</p>
 
   <div class="card" id="card"></div>
 
@@ -192,6 +209,7 @@
     <button class="big-btn go" id="overlayBtn"></button>
   </div>
 
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const LETTERS = "ABCDEFGHIJKLMNOP";
 
@@ -432,6 +450,22 @@ function sunkCellsForShooter(shooter, enemy) {
   return set;
 }
 
+// ---------- Úvodní menu: režim ----------
+function renderHome() {
+  cleanupNet();
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Jak chceš hrát?</h2>
+      <div class="menu-btns">
+        <button class="go big-btn" id="btnLocal">📟 Na jednom počítači</button>
+        <button class="big-btn" id="btnOnline">🌐 Hra online (dvě zařízení)</button>
+      </div>
+      <div class="hint">Online: jeden vytvoří hru a pošle kód, druhý ho zadá.</div>
+    </div>`;
+  $("btnLocal").onclick = () => renderSetup();
+  $("btnOnline").onclick = () => renderOnlineLobby();
+}
+
 // ---------- Fáze: výběr velikosti ----------
 function renderSetup() {
   card.innerHTML = `
@@ -441,6 +475,11 @@ function renderSetup() {
       <div class="hint">Větší mapa = víc lodí a delší hra.</div>
       <div class="controls"><button class="go big-btn" id="startBtn">Začít hru</button></div>
     </div>`;
+  fillSizeGrid(renderSetup);
+  $("startBtn").onclick = () => startGame();
+}
+
+function fillSizeGrid(rerender) {
   const sg = $("sizeGrid");
   for (const [key, m] of Object.entries(MAPS)) {
     const div = document.createElement("div");
@@ -449,10 +488,9 @@ function renderSetup() {
       <div class="dim">${m.size}×${m.size}</div>
       <div class="label">${m.label}</div>
       <div class="fleet">${m.fleet.length} lodí</div>`;
-    div.onclick = () => { state.mapKey = key; renderSetup(); };
+    div.onclick = () => { state.mapKey = key; rerender(); };
     sg.appendChild(div);
   }
-  $("startBtn").onclick = () => startGame();
 }
 
 function startGame() {
@@ -535,6 +573,7 @@ function renderPlacement() {
 }
 
 function finishPlacement() {
+  if (net.enabled) { finishPlacementOnline(); return; }
   if (state.current === 0) {
     showOverlay({
       icon: "🔒", title: "Předej počítač Hráči 2",
@@ -550,6 +589,303 @@ function finishPlacement() {
       onClick: () => { hideOverlay(); state.phase = "battle"; state.current = 0; renderBattle(); },
     });
   }
+}
+
+// ======================= ONLINE (PeerJS) =======================
+const net = {
+  enabled: false, isHost: false, peer: null, conn: null,
+  myReady: false, peerReady: false, myTurn: false, awaiting: false, foeSunk: null,
+};
+
+function cleanupNet() {
+  try { net.conn && net.conn.close(); } catch (e) {}
+  try { net.peer && net.peer.destroy(); } catch (e) {}
+  net.enabled = false; net.isHost = false; net.peer = null; net.conn = null;
+  net.myReady = false; net.peerReady = false; net.myTurn = false; net.awaiting = false; net.foeSunk = null;
+}
+
+function send(msg) { if (net.conn && net.conn.open) net.conn.send(msg); }
+
+function makeCode() {
+  const A = "ABCDEFGHJKLMNPRSTUVWXYZ23456789"; // bez matoucích znaků (0/O, 1/I)
+  let s = "";
+  for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
+}
+
+function renderOnlineLobby() {
+  cleanupNet();
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Hra online</h2>
+      <div class="menu-btns">
+        <button class="go big-btn" id="btnCreate">Vytvořit hru</button>
+        <button class="big-btn" id="btnJoin">Připojit se ke hře</button>
+        <button class="ghost" id="btnBack">← Zpět</button>
+      </div>
+    </div>`;
+  $("btnCreate").onclick = renderHostSetup;
+  $("btnJoin").onclick = renderJoin;
+  $("btnBack").onclick = renderHome;
+}
+
+function renderHostSetup() {
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Vyber velikost mapy</h2>
+      <div class="size-grid" id="sizeGrid"></div>
+      <div class="controls">
+        <button class="ghost" id="btnBack">← Zpět</button>
+        <button class="go big-btn" id="btnCreate">Vytvořit hru</button>
+      </div>
+    </div>`;
+  fillSizeGrid(renderHostSetup);
+  $("btnBack").onclick = renderOnlineLobby;
+  $("btnCreate").onclick = createRoom;
+}
+
+function renderJoin() {
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Připojit se ke hře</h2>
+      <div><input class="code-input" id="codeInput" maxlength="4" autocapitalize="characters" placeholder="KÓD"></div>
+      <div class="controls">
+        <button class="ghost" id="btnBack">← Zpět</button>
+        <button class="go big-btn" id="btnGo">Připojit</button>
+      </div>
+      <div class="hint" id="joinHint">Zadej 4místný kód, který ti poslal soupeř.</div>
+    </div>`;
+  $("btnBack").onclick = renderOnlineLobby;
+  const go = () => { const v = $("codeInput").value.trim().toUpperCase(); if (v) joinRoom(v); };
+  $("btnGo").onclick = go;
+  $("codeInput").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  $("codeInput").focus();
+}
+
+function renderWaiting(text, withCancel) {
+  card.innerHTML = `
+    <div class="setup">
+      <h2>${text}</h2>
+      ${withCancel ? '<div class="controls"><button class="ghost" id="btnCancel">Zrušit</button></div>' : '<div class="hint">Vydrž chvilku…</div>'}
+    </div>`;
+  if (withCancel) $("btnCancel").onclick = () => renderHome();
+}
+
+function renderHostWaiting(code) {
+  card.innerHTML = `
+    <div class="setup">
+      <h2>Kód hry</h2>
+      <div class="code-box">${code}</div>
+      <div class="controls">
+        <button class="ghost" id="btnCopy">📋 Kopírovat</button>
+        <button class="ghost" id="btnCancel">Zrušit</button>
+      </div>
+      <div class="hint">Pošli kód soupeři. Jakmile se připojí, oba začnete rozmísťovat loďstvo.</div>
+    </div>`;
+  $("btnCopy").onclick = () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(code);
+    $("btnCopy").textContent = "✓ Zkopírováno";
+  };
+  $("btnCancel").onclick = () => renderHome();
+}
+
+function createRoom() {
+  if (typeof Peer === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu (PeerJS). Zkontroluj připojení." }); return; }
+  net.enabled = true; net.isHost = true;
+  renderWaiting("Vytvářím hru…");
+  const code = makeCode();
+  net.peer = new Peer(code);
+  net.peer.on("open", () => renderHostWaiting(code));
+  net.peer.on("connection", (conn) => {
+    net.conn = conn;
+    setupConn(conn);
+    conn.on("open", () => {
+      send({ t: "config", mapKey: state.mapKey });
+      startOnlineGame();
+    });
+  });
+  net.peer.on("error", (err) => {
+    if (err && err.type === "unavailable-id") { try { net.peer.destroy(); } catch (e) {} createRoom(); }
+    else netError(err);
+  });
+}
+
+function joinRoom(code) {
+  if (typeof Peer === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu (PeerJS). Zkontroluj připojení." }); return; }
+  net.enabled = true; net.isHost = false;
+  renderWaiting("Připojuji se…", true);
+  net.peer = new Peer();
+  net.peer.on("open", () => {
+    const conn = net.peer.connect(code, { reliable: true });
+    net.conn = conn;
+    setupConn(conn);
+    conn.on("open", () => { renderWaiting("Připojeno, čekám na nastavení hry…"); });
+  });
+  net.peer.on("error", (err) => {
+    if (err && err.type === "peer-unavailable") netError({ message: "Hra s tímto kódem nebyla nalezena. Zkontroluj kód." });
+    else netError(err);
+  });
+}
+
+function setupConn(conn) {
+  conn.on("data", onNetMessage);
+  conn.on("close", onDisconnect);
+}
+
+function onNetMessage(msg) {
+  switch (msg && msg.t) {
+    case "config": state.mapKey = msg.mapKey; startOnlineGame(); break;
+    case "ready":  net.peerReady = true; maybeBegin(); break;
+    case "begin":  startOnlineBattle(msg.firstTurn); break;
+    case "fire":   handleFire(msg.r, msg.c); break;
+    case "result": handleResult(msg); break;
+  }
+}
+
+function startOnlineGame() {
+  net.myReady = false; net.peerReady = false; net.foeSunk = new Set();
+  const m = MAPS[state.mapKey];
+  SIZE = m.size; SHIPS = buildFleet(m.fleet);
+  document.documentElement.style.setProperty("--cell", m.cell + "px");
+  state.players = [newPlayer("Já"), newPlayer("Soupeř")];
+  state.current = 0; state.placeIndex = 0; state.orient = 0; state.phase = "placement";
+  hoverCell = null;
+  renderPlacement();
+}
+
+function finishPlacementOnline() {
+  net.myReady = true;
+  state.phase = "waiting";
+  send({ t: "ready" });
+  if (net.isHost) maybeBegin();
+  if (state.phase === "waiting") renderWaiting("Loďstvo rozmístěno. Čekám na soupeře…");
+}
+
+function maybeBegin() {
+  if (net.isHost && net.myReady && net.peerReady) {
+    const firstTurn = "host";
+    send({ t: "begin", firstTurn });
+    startOnlineBattle(firstTurn);
+  }
+}
+
+function startOnlineBattle(firstTurn) {
+  state.phase = "battle";
+  net.awaiting = false;
+  net.myTurn = (firstTurn === (net.isHost ? "host" : "guest"));
+  renderOnlineBattle();
+}
+
+function renderOnlineBattle() {
+  const me = state.players[0], foe = state.players[1];
+  card.innerHTML = `
+    <div class="status" id="status"></div>
+    <div class="boards" id="boards"></div>
+    <div class="controls"></div>
+    <div class="hint">Zásah = hraješ znovu. Vedle = tah přechází na soupeře.</div>
+    <div class="fleet-info" id="fleetInfo">Potopené soupeřovy lodě se ukážou tmavě.</div>`;
+  const boardsEl = $("boards");
+
+  const enemyWrap = document.createElement("div");
+  enemyWrap.className = "board-wrap";
+  enemyWrap.innerHTML = `<div class="board-title">🎯 Soupeřova mapa - sem střílíš</div>`;
+  enemyWrap.appendChild(makeGrid({
+    shots: me.shots,
+    sunkCells: net.foeSunk,
+    clickable: net.myTurn && !net.awaiting,
+    onCell: (r, c) => onlineFire(r, c),
+  }));
+
+  const myWrap = document.createElement("div");
+  myWrap.className = "board-wrap mine";
+  myWrap.innerHTML = `<div class="board-title">⚓ Moje loďstvo</div>`;
+  myWrap.appendChild(makeGrid({
+    reveal: true, board: me.board, shots: foe.shots, sunkCells: sunkCellsOf(me),
+  }));
+
+  boardsEl.append(enemyWrap, myWrap);
+
+  $("status").innerHTML = net.awaiting
+    ? "Střela odeslána, čekám na výsledek…"
+    : net.myTurn
+      ? `Jsi na tahu - <span class="turn">vystřel na soupeřovu mapu</span>`
+      : "Čeká se na soupeře…";
+}
+
+function onlineFire(r, c) {
+  const me = state.players[0];
+  if (!net.myTurn || net.awaiting) return;
+  if (me.shots[r][c] !== 0) return;
+  net.awaiting = true;
+  send({ t: "fire", r, c });
+  renderOnlineBattle();
+}
+
+// jsem terč: vyhodnotím střelu proti SVÉ desce a pošlu výsledek
+function handleFire(r, c) {
+  const me = state.players[0], foe = state.players[1];
+  if (foe.shots[r][c] !== 0) return; // duplicitní střela, ignoruj
+  const hit = me.board[r][c] === 1;
+  foe.shots[r][c] = hit ? 2 : 1;
+  let outcome = "miss", sunkCells = null, win = false;
+  if (hit) {
+    const ship = me.ships.find(s => s.cells.some(cell => cell.r === r && cell.c === c));
+    ship.hits.add(r + "," + c);
+    if (ship.hits.size === ship.cells.length) { outcome = "sunk"; sunkCells = ship.cells; }
+    else outcome = "hit";
+    win = me.ships.every(s => s.hits.size === s.cells.length);
+  }
+  send({ t: "result", r, c, outcome, sunkCells, win });
+  if (win) { renderOnlineBattle(); endOnline(false); return; }
+  net.myTurn = (outcome === "miss"); // soupeř minul -> teď střílím já
+  renderOnlineBattle();
+}
+
+// dostal jsem výsledek své střely
+function handleResult(msg) {
+  const me = state.players[0];
+  me.shots[msg.r][msg.c] = (msg.outcome === "miss") ? 1 : 2;
+  if (msg.sunkCells) for (const { r, c } of msg.sunkCells) net.foeSunk.add(r + "," + c);
+  net.awaiting = false;
+  if (msg.win) { renderOnlineBattle(); endOnline(true); return; }
+  net.myTurn = (msg.outcome !== "miss"); // zásah -> střílím znovu, vedle -> soupeř
+  renderOnlineBattle();
+  const s = $("status");
+  if (s) {
+    if (msg.outcome === "sunk") s.innerHTML = `💥 <span class="turn">Potopil jsi loď!</span> Střílíš znovu.`;
+    else if (msg.outcome === "hit") s.innerHTML = `🔥 <span class="turn">Zásah!</span> Střílíš znovu.`;
+    else s.textContent = "💧 Vedle. Soupeř je na tahu.";
+  }
+}
+
+function endOnline(won) {
+  state.phase = "gameover";
+  showOverlay({
+    icon: won ? "🏆" : "💀",
+    title: won ? "Vyhrál jsi!" : "Prohrál jsi",
+    text: won ? "Potopil jsi celé soupeřovo loďstvo. Gratulace!" : "Soupeř potopil celé tvoje loďstvo.",
+    btn: "Zpět na začátek",
+    onClick: () => { hideOverlay(); renderHome(); },
+  });
+}
+
+function onDisconnect() {
+  if (state.phase === "gameover") return;
+  showOverlay({
+    icon: "🔌", title: "Soupeř se odpojil",
+    text: "Spojení bylo přerušeno.",
+    btn: "Zpět na začátek",
+    onClick: () => { hideOverlay(); renderHome(); },
+  });
+}
+
+function netError(err) {
+  showOverlay({
+    icon: "⚠️", title: "Chyba spojení",
+    text: (err && err.message) || "Nepodařilo se navázat spojení. Zkus to znovu.",
+    btn: "Zpět",
+    onClick: () => { hideOverlay(); renderHome(); },
+  });
 }
 
 // ---------- Fáze: bitva ----------
@@ -647,7 +983,7 @@ function endGame(winner) {
   showOverlay({
     icon: "🏆", title: `Vyhrává ${winner.name}!`,
     text: "Celé soupeřovo loďstvo je potopené. Gratulace!",
-    btn: "Hrát znovu", onClick: () => { hideOverlay(); state.phase = "setup"; renderSetup(); },
+    btn: "Hrát znovu", onClick: () => { hideOverlay(); state.phase = "setup"; renderHome(); },
   });
 }
 
@@ -680,7 +1016,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 // start
-renderSetup();
+renderHome();
 </script>
 </body>
 </html>
