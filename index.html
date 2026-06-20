@@ -209,7 +209,7 @@
     <button class="big-btn go" id="overlayBtn"></button>
   </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
 const LETTERS = "ABCDEFGHIJKLMNOP";
 
@@ -591,35 +591,34 @@ function finishPlacement() {
   }
 }
 
-// ======================= ONLINE (PeerJS) =======================
-// STUN (Google) + veřejný TURN (Open Relay) - TURN pomůže přes přísné NATy/firewally
-const ICE_CONFIG = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-  ],
-};
-const PEER_OPTS = { config: ICE_CONFIG };
+// ======================= ONLINE (MQTT relay přes WebSocket) =======================
+// Data tečou přes veřejný MQTT broker po WSS - obyčejné spojení na server,
+// projde přes jakoukoliv síť/NAT, bez účtu a bez TURN. Posílají se jen
+// souřadnice střel a výsledky (loďstvo nikdy neopustí prohlížeč).
+const BROKER = "wss://broker.emqx.io:8084/mqtt";
 
 const net = {
-  enabled: false, isHost: false, peer: null, conn: null,
+  enabled: false, isHost: false, started: false,
+  client: null, code: null, myTopic: null, foeTopic: null,
   myReady: false, peerReady: false, myTurn: false, awaiting: false, foeSunk: null,
-  watchdog: null,
+  watchdog: null, helloTimer: null,
 };
 
 function clearWatch() { if (net.watchdog) { clearTimeout(net.watchdog); net.watchdog = null; } }
+function clearHello() { if (net.helloTimer) { clearInterval(net.helloTimer); net.helloTimer = null; } }
 
 function cleanupNet() {
-  clearWatch();
-  try { net.conn && net.conn.close(); } catch (e) {}
-  try { net.peer && net.peer.destroy(); } catch (e) {}
-  net.enabled = false; net.isHost = false; net.peer = null; net.conn = null;
+  clearWatch(); clearHello();
+  try { if (net.client && net.client.connected && net.myTopic) net.client.publish(net.myTopic, JSON.stringify({ t: "bye" })); } catch (e) {}
+  try { net.client && net.client.end(true); } catch (e) {}
+  net.enabled = false; net.isHost = false; net.started = false;
+  net.client = null; net.code = null; net.myTopic = null; net.foeTopic = null;
   net.myReady = false; net.peerReady = false; net.myTurn = false; net.awaiting = false; net.foeSunk = null;
 }
 
-function send(msg) { if (net.conn && net.conn.open) net.conn.send(msg); }
+function send(msg) {
+  if (net.client && net.client.connected) net.client.publish(net.myTopic, JSON.stringify(msg), { qos: 1 });
+}
 
 function makeCode() {
   const A = "ABCDEFGHJKLMNPRSTUVWXYZ23456789"; // bez matoucích znaků (0/O, 1/I)
@@ -705,59 +704,69 @@ function renderHostWaiting(code) {
 }
 
 function createRoom() {
-  if (typeof Peer === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu (PeerJS). Zkontroluj připojení." }); return; }
-  net.enabled = true; net.isHost = true;
+  if (typeof mqtt === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu. Zkontroluj připojení k internetu." }); return; }
   renderWaiting("Vytvářím hru…");
-  const code = makeCode();
-  net.peer = new Peer(code, PEER_OPTS);
-  net.peer.on("open", () => renderHostWaiting(code));
-  net.peer.on("connection", (conn) => {
-    net.conn = conn;
-    setupConn(conn);
-    conn.on("open", () => {
-      send({ t: "config", mapKey: state.mapKey });
-      startOnlineGame();
-    });
-  });
-  net.peer.on("error", (err) => {
-    if (err && err.type === "unavailable-id") { try { net.peer.destroy(); } catch (e) {} createRoom(); }
-    else netError(err);
-  });
+  mqttConnect(makeCode(), true);
 }
 
 function joinRoom(code) {
-  if (typeof Peer === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu (PeerJS). Zkontroluj připojení." }); return; }
-  net.enabled = true; net.isHost = false;
+  if (typeof mqtt === "undefined") { netError({ message: "Nepodařilo se načíst online knihovnu. Zkontroluj připojení k internetu." }); return; }
   renderWaiting("Připojuji se…", true);
-  net.watchdog = setTimeout(() => {
-    netError({ message: "Spojení se nepodařilo navázat do 20 s. Zkontroluj kód a připojení; přísná síť/firewall může P2P blokovat. Zkus to znovu." });
-  }, 20000);
-  net.peer = new Peer(undefined, PEER_OPTS);
-  net.peer.on("open", () => {
-    const conn = net.peer.connect(code, { reliable: true });
-    net.conn = conn;
-    setupConn(conn);
-    conn.on("open", () => { renderWaiting("Připojeno, čekám na nastavení hry…"); });
-  });
-  net.peer.on("error", (err) => {
-    if (err && err.type === "peer-unavailable") netError({ message: "Hra s tímto kódem nebyla nalezena. Zkontroluj kód (musí být zadaný přesně) a že soupeř má okno hry stále otevřené." });
-    else netError(err);
-  });
+  mqttConnect(code, false);
 }
 
-function setupConn(conn) {
-  conn.on("data", onNetMessage);
-  conn.on("close", onDisconnect);
-  conn.on("error", (err) => netError(err));
+function mqttConnect(code, isHost) {
+  cleanupNet();
+  net.enabled = true; net.isHost = isHost; net.code = code;
+  net.myTopic  = `lode2p/${code}/${isHost ? "h" : "g"}`;
+  net.foeTopic = `lode2p/${code}/${isHost ? "g" : "h"}`;
+  const clientId = "lode_" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+
+  net.watchdog = setTimeout(() => netError({ message: "Nepodařilo se připojit k serveru (10 s). Zkontroluj internet a zkus to znovu." }), 10000);
+
+  net.client = mqtt.connect(BROKER, {
+    clientId, clean: true, keepalive: 60, reconnectPeriod: 3000, connectTimeout: 8000,
+    will: { topic: net.myTopic, payload: JSON.stringify({ t: "bye" }), qos: 0, retain: false },
+  });
+
+  net.client.on("connect", () => {
+    net.client.subscribe(net.foeTopic, { qos: 1 }, () => onMqttReady());
+  });
+  net.client.on("message", (topic, payload) => {
+    try { onNetMessage(JSON.parse(payload.toString())); } catch (e) {}
+  });
+  net.client.on("error", () => { /* řeší watchdog / auto-reconnect */ });
+}
+
+function onMqttReady() {
+  clearWatch();
+  if (net.isHost) {
+    renderHostWaiting(net.code);
+  } else {
+    // guest opakovaně volá "hello", dokud nedostane nastavení hry
+    send({ t: "hello" });
+    net.helloTimer = setInterval(() => send({ t: "hello" }), 1500);
+    net.watchdog = setTimeout(() => netError({ message: "Soupeř neodpovídá (20 s). Zkontroluj kód a že druhý hráč má hru otevřenou." }), 20000);
+    renderWaiting("Připojuji se…", true);
+  }
 }
 
 function onNetMessage(msg) {
   switch (msg && msg.t) {
-    case "config": state.mapKey = msg.mapKey; startOnlineGame(); break;
+    case "hello":
+      if (net.isHost) {
+        send({ t: "config", mapKey: state.mapKey });  // odpověz vždy (kdyby se zpráva ztratila)
+        if (!net.started) { net.started = true; startOnlineGame(); }
+      }
+      break;
+    case "config":
+      if (!net.started) { net.started = true; clearWatch(); clearHello(); state.mapKey = msg.mapKey; startOnlineGame(); }
+      break;
     case "ready":  net.peerReady = true; maybeBegin(); break;
     case "begin":  startOnlineBattle(msg.firstTurn); break;
     case "fire":   handleFire(msg.r, msg.c); break;
     case "result": handleResult(msg); break;
+    case "bye":    onDisconnect(); break;
   }
 }
 
